@@ -25,7 +25,18 @@ def candidate_base_urls() -> list[str]:
 
 
 class ApiError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None, payload=None):
+        super().__init__(message)
+        self.status = status
+        self.payload = payload           # parsed JSON "detail" of the error, if any
+
+
+def _error(method: str, path: str, r: httpx.Response) -> ApiError:
+    try:
+        payload = r.json().get("detail")
+    except Exception:  # noqa: BLE001
+        payload = None
+    return ApiError(f"{method} {path} -> {r.status_code}: {r.text[:300]}", r.status_code, payload)
 
 
 class MosjeApi:
@@ -57,14 +68,23 @@ class MosjeApi:
         with self._client(self.base_url) as c:
             r = c.get(path, params={k: v for k, v in params.items() if v is not None})
         if r.status_code >= 400:
-            raise ApiError(f"GET {path} -> {r.status_code}: {r.text[:300]}")
+            raise _error("GET", path, r)
         return r.json()
 
     def post(self, path: str, **params):
         with self._client(self.base_url) as c:
             r = c.post(path, params={k: v for k, v in params.items() if v is not None})
         if r.status_code >= 400:
-            raise ApiError(f"POST {path} -> {r.status_code}: {r.text[:300]}")
+            raise _error("POST", path, r)
+        return r.json()
+
+    def upload(self, path: str, filename: str, content, timeout: float = 900.0, **params):
+        """POST a file as multipart field 'file' (content: bytes or a binary file object)."""
+        with self._client(self.base_url) as c:
+            r = c.post(path, params={k: v for k, v in params.items() if v is not None},
+                       files={"file": (filename, content, "application/octet-stream")}, timeout=timeout)
+        if r.status_code >= 400:
+            raise _error("POST", path, r)
         return r.json()
 
     def get_all(self, path: str, page_size: int = 5000, **params) -> list[dict]:

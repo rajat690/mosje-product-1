@@ -32,6 +32,22 @@ class PipelineBusy(RuntimeError):
     pass
 
 
+class PipelineTooBig(RuntimeError):
+    pass
+
+
+def estimate_memory_mb(n_cbse: int, n_ja: int) -> int:
+    """Rough peak memory of one run. The engine holds all inputs and results in memory. Measured on this code
+    (Postgres, 547 scheme rows, ~74% of students linked): 5k CBSE + 21k JA = 294 MB, 20k CBSE + 21k JA = 917 MB,
+    5k CBSE + 200k JA = 640 MB."""
+    return int(46 + 41.5 * n_cbse / 1000 + 1.93 * n_ja / 1000)
+
+
+def memory_limit_mb() -> int:
+    """PIPELINE_MEMORY_LIMIT_MB; default 450 on Render (free instance = 512 MB), unlimited elsewhere. 0 = off."""
+    return int(os.environ.get("PIPELINE_MEMORY_LIMIT_MB") or ("450" if os.environ.get("RENDER") else "0"))
+
+
 def _f(v):
     try:
         return None if v in (None, "") else float(v)
@@ -68,10 +84,24 @@ def execute_run(engine: Engine, run_id: str, sensitivity: bool | None = None) ->
             master = repo.load_master_rows(conn)
         if not ja or not cbse or not master:
             raise RuntimeError("database is not seeded (run POST /admin/seed first)")
+        est, limit = estimate_memory_mb(len(cbse), len(ja)), memory_limit_mb()
+        if limit and est > limit:
+            raise PipelineTooBig(
+                f"{len(cbse):,} CBSE x {len(ja):,} Jan Aadhaar rows need about {est} MB of memory, more than the "
+                f"{limit} MB allowed on this server (Render free = 512 MB). Upload a smaller CBSE file (e.g. one "
+                "district), or use a bigger instance and set PIPELINE_MEMORY_LIMIT_MB (0 = no check).")
         rules = [compile_row(r, i) for i, r in enumerate(master, start=1)]
         log.info("run %s: loaded %d JA, %d CBSE, %d GT, %d scheme rows from DB", run_id, len(ja), len(cbse),
                  len(truth), len(rules))
+        gt = ground_truth_coverage(cbse, truth)
+        if not gt["available"]:
+            log.info("run %s: ground truth not available (%s) - precision/recall/TP/FP/FN will not be reported",
+                     run_id, gt["note"])
+            truth = []                      # never score user data against partial / stale ground truth
         c = compute(ja, cbse, truth, rules, log=log.info, t0=t0, sensitivity=sensitivity)
+        if not gt["available"]:
+            strip_ground_truth(c)
+        c["results"]["ground_truth"] = gt
         del ja
         import gc
         gc.collect()
@@ -92,6 +122,51 @@ def execute_run(engine: Engine, run_id: str, sensitivity: bool | None = None) ->
         raise
     finally:
         _LOCK.release()
+
+
+NO_GT = "not available (no ground truth)"
+GT_FIELDS = ("Records_with_true_JA_member", "True_Matches_TP", "False_Matches_FP", "of_which_wrong_member",
+             "Missed_Matches_FN", "True_Negatives_TN", "Precision", "Recall", "False_Positive_Rate",
+             "Discovery_where_true_member_exists")
+
+
+def ground_truth_coverage(cbse: list[dict], truth: list[dict]) -> dict:
+    """Ground truth is usable only if it has a row for EVERY CBSE record (synthetic data). Uploaded (real)
+    data has none, or the leftover rows would describe other records."""
+    rolls = {t.get("roll_no") for t in truth}
+    covered = sum(1 for c in cbse if c["roll_no"] in rolls)
+    ok = bool(cbse) and covered == len(cbse)
+    note = ("ground truth covers every CBSE record" if ok else
+            "no ground truth loaded (uploaded data)" if not truth else
+            f"ground truth covers only {covered:,} of {len(cbse):,} CBSE records")
+    return {"available": ok, "cbse_records": len(cbse), "records_with_ground_truth": covered,
+            "ground_truth_rows": len(truth), "note": note}
+
+
+def strip_ground_truth(c: dict) -> None:
+    """Remove every number that needs ground truth, so nothing shows 'precision 0' for real data."""
+    res = c["results"]
+    keep = [q for q in c["quality"] if q.get("Segment") in ("OVERALL", "Class X", "Class XII")]
+    for q in keep:
+        for f in GT_FIELDS:
+            q[f] = None
+    c["quality"][:] = keep
+    res["quality"] = keep
+    res["counts"]["cbse_in_ja"] = None
+    if res.get("sensitivity"):
+        for f in GT_FIELDS:
+            res["sensitivity"][f] = None
+    for k in ("match_outcomes", "scenario_summary", "scenarios36_summary"):
+        res.pop(k, None)
+    for r in c.get("coverage", []):
+        r["Best_Candidate_Is_True_Member"] = None
+        r["Decision_Correct_vs_GT"] = None
+    for d in c["decisions"]:
+        d["GT_True_Member_ID"] = ""
+        d["GT_Noise"] = ""
+        d["GT_Twin_or_Lookalike"] = ""
+        d["GT_Correct"] = "n/a"
+        d["GT_Outcome"] = "n/a"
 
 
 def _fail(engine, run_id, msg):

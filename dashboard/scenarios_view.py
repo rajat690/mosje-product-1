@@ -15,8 +15,11 @@ OUTCOME_LABEL = {"TP": "TP – linked, correct", "FP": "FP – linked, wrong per
                  "FN": "FN – not linked, true match exists", "TN": "TN – not linked, not in JA"}
 
 
-def render_scenarios(scn: pd.DataFrame):
+def render_scenarios(scn: pd.DataFrame, ground_truth_available: bool = True):
     st.subheader("Matching / non-matching students by decision-matrix scenario")
+    if not ground_truth_available:
+        st.info("TP / FP / FN / TN: not available (no ground truth) for uploaded data. Records, linked / not "
+                "linked and G7-blocked counts per scenario are shown.")
     st.caption("All 56 rows of the Record Linkage V3.0 matrix, plus the exact-match path (EXACT), "
                "'no blocking candidate' (NO_CANDIDATE) and the default rule. Ground truth: TP = linked to the "
                "true member · FP = linked to the wrong person · FN = not linked although the student is in "
@@ -25,13 +28,14 @@ def render_scenarios(scn: pd.DataFrame):
     scn = scn.copy()
     for c in ["Records", "Linked", "Not_Linked", "TP", "FP", "FN", "TN", "G7_Blocked"]:
         scn[c] = pd.to_numeric(scn[c], errors="coerce").fillna(0).astype(int)
-    tot = scn[["Records", "TP", "FP", "FN", "TN", "G7_Blocked"]].sum()
+    tot = scn[["Records", "Linked", "Not_Linked", "TP", "FP", "FN", "TN", "G7_Blocked"]].sum()
+    na = "n/a"
     k = st.columns(7)
     k[0].metric("CBSE records", f"{tot.Records:,}")
-    k[1].metric("Matching (linked)", f"{tot.TP + tot.FP:,}")
-    k[2].metric("Non-matching (not linked)", f"{tot.FN + tot.TN:,}")
-    k[3].metric("TP / FP", f"{tot.TP:,} / {tot.FP:,}")
-    k[4].metric("FN / TN", f"{tot.FN:,} / {tot.TN:,}")
+    k[1].metric("Matching (linked)", f"{tot.Linked:,}")
+    k[2].metric("Non-matching (not linked)", f"{tot.Not_Linked:,}")
+    k[3].metric("TP / FP", f"{tot.TP:,} / {tot.FP:,}" if ground_truth_available else na)
+    k[4].metric("FN / TN", f"{tot.FN:,} / {tot.TN:,}" if ground_truth_available else na)
     k[5].metric("G7-blocked", f"{tot.G7_Blocked:,}")
     k[6].metric("Unreachable rows", f"{(scn.Status == 'Unreachable').sum()} of 56")
 
@@ -45,12 +49,13 @@ def render_scenarios(scn: pd.DataFrame):
     elif show == "Unreachable only":
         view = view[view.Status == "Unreachable"]
 
+    out_cols = ["TP", "FP", "FN", "TN"] if ground_truth_available else ["Linked", "Not_Linked"]
     chart_df = view[view.Records > 0].melt(id_vars=["Scenario", "Action", "Criteria", "Records"],
-                                             value_vars=["TP", "FP", "FN", "TN"], var_name="Outcome",
+                                             value_vars=out_cols, var_name="Outcome",
                                              value_name="Count")
     chart_df = chart_df[chart_df.Count > 0]
     if len(chart_df):
-        chart_df["Outcome_Label"] = chart_df.Outcome.map(OUTCOME_LABEL)
+        chart_df["Outcome_Label"] = chart_df.Outcome.map(OUTCOME_LABEL).fillna(chart_df.Outcome)
         order = list(view[view.Records > 0].Scenario)
         hide_exact = st.checkbox(f"Hide the EXACT row from the chart (it has "
                                  f"{int(scn.loc[scn.Scenario == 'EXACT', 'Records'].sum()):,} records and flattens "
@@ -60,13 +65,15 @@ def render_scenarios(scn: pd.DataFrame):
             order = [o for o in order if o != "EXACT"]
         y = alt.Y("Count:Q", stack=True, title="CBSE records")
         base = alt.Chart(chart_df)
-        bars = base.mark_bar().encode(
-            x=alt.X("Scenario:N", sort=order, title="Scenario"), y=y,
-            color=alt.Color("Outcome:N", scale=OUTCOME_COLORS, title="Ground truth",
+        color = alt.Color("Outcome:N", scale=OUTCOME_COLORS, title="Ground truth",
                             legend=alt.Legend(labelExpr="{'TP':'TP – linked, correct','FP':'FP – linked, wrong person',"
                                                         "'FN':'FN – not linked, true match exists',"
                                                         "'TN':'TN – not linked, not in JA'}[datum.label]",
-                                              labelLimit=300)),
+                                              labelLimit=300)) if ground_truth_available else \
+            alt.Color("Outcome:N", title="Linked?", scale=alt.Scale(domain=["Linked", "Not_Linked"],
+                                                                     range=["#70AD47", "#8FAADC"]))
+        bars = base.mark_bar().encode(
+            x=alt.X("Scenario:N", sort=order, title="Scenario"), y=y, color=color,
             order=alt.Order("Outcome:N"),
             tooltip=["Scenario", "Action", "Criteria", "Outcome_Label", "Count", "Records"]).properties(height=380)
         labels = base.transform_aggregate(Total="sum(Count)", groupby=["Scenario"]).mark_text(
@@ -80,6 +87,9 @@ def render_scenarios(scn: pd.DataFrame):
             "Classification", "Overall", "Name", "DOB", "Father", "Mother", "Gender", "Achievable_Score_Range",
             "Linked", "Not_Linked", "FN_Best_Candidate_Was_True_Member", "Precision"]
     cols = [c for c in cols if c in disp.columns]
+    if not ground_truth_available:
+        cols = [c for c in cols if c not in ("TP", "FP", "FN", "TN", "FN_Best_Candidate_Was_True_Member",
+                                             "Precision")]
     unreach = disp.Status == "Unreachable"
     for c in ["Records", "TP", "FP", "FN", "TN", "G7_Blocked", "Linked", "Not_Linked",
               "FN_Best_Candidate_Was_True_Member"]:

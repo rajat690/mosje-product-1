@@ -1,8 +1,11 @@
 """Load the synthetic CSVs (data/*.csv or *.csv.gz) and the scheme master xlsx into the database.
 
 Idempotent: each dataset's SHA-256 is stored in seed_meta; if nothing changed the seed is skipped.
-A changed dataset (or force=True) reloads ALL inputs and clears old pipeline results, all in one
-transaction. Usage:  python -m db.seed [--force]
+A changed dataset, uploaded data in the tables (dataset_sources), or force=True reloads ALL inputs
+and clears old pipeline results, all in one transaction. Usage:  python -m db.seed [--force]
+
+seed_if_empty() is what the API runs at startup (AUTO_SEED): it loads the synthetic data ONLY when the
+CBSE and Jan Aadhaar tables are both empty, so uploaded data survives restarts.
 """
 from __future__ import annotations
 
@@ -95,7 +98,9 @@ def seed(engine: Engine | None = None, force: bool = False, data_dir: Path | Non
     with engine.connect() as conn:
         meta = {r[0]: r[1] for r in conn.execute(text("SELECT dataset, checksum FROM seed_meta"))}
         counts = {t: conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar() for t in INPUT_TABLES}
-    if not force and meta == sums and counts["jan_aadhaar_members"] and counts["scheme_rules"]:
+        not_synthetic = [r[0] for r in conn.execute(text(
+            "SELECT dataset FROM dataset_sources WHERE source <> 'synthetic' AND dataset <> 'ground_truth'"))]
+    if not force and not not_synthetic and meta == sums and counts["jan_aadhaar_members"] and counts["scheme_rules"]:
         return {"status": "skipped", "reason": "already seeded with identical data", "counts": counts}
 
     now = datetime.now(timezone.utc)
@@ -126,19 +131,64 @@ def seed(engine: Engine | None = None, force: bool = False, data_dir: Path | Non
             "roll_no", "true_member_id", "in_jan_aadhaar", "class_passed", "noise_types", "has_lookalike_or_twin"), (
             (t["roll_no"], _nz(t["true_member_id"]), _nz(t["in_jan_aadhaar"]), _nz(t["class_passed"]),
              _nz(t["noise_types"]), _nz(t["has_lookalike_or_twin"])) for t in truth))
-        loaded["scheme_master"] = bulk_insert(conn, "scheme_master", (
-            "master_row", "scheme_name", "level", "state_ut", "verification_status", "raw_json", "source_file",
-            "loaded_at"), (
-            (i, _nz(r.get("Programme / Scheme Name")), _nz(r.get("Level")), _nz(r.get("State / UT / Central")),
-             _nz(r.get("Verification Status")), json.dumps(r, default=str, ensure_ascii=False), master_path.name, now)
-            for i, r in enumerate(master, start=1)))
-        loaded["scheme_rules"] = bulk_insert(conn, "scheme_rules", RULE_COLS, rules_rows(master, now))
+        loaded.update(_load_schemes(conn, master, master_path, now))
         rc = dict(loaded, scheme_master=len(master))
         for k, v in sums.items():
             conn.execute(text("INSERT INTO seed_meta (dataset, checksum, row_count, loaded_at) VALUES (:d, :c, :n, :t)"),
                          {"d": k, "c": v, "n": rc.get(k, 0), "t": now})
+        for k in ("cbse_results", "jan_aadhaar_members", "ground_truth"):
+            _set_source(conn, k, paths[k].name if paths[k] else None, rc.get(k, 0), now, sums.get(k))
     log.info("seeded %s", loaded)
     return {"status": "seeded", "counts": loaded}
+
+
+def _set_source(conn, dataset, filename, n, now, checksum):
+    conn.execute(text("DELETE FROM dataset_sources WHERE dataset = :d"), {"d": dataset})
+    conn.execute(text("INSERT INTO dataset_sources (dataset, source, filename, row_count, uploaded_at, checksum, note) "
+                      "VALUES (:d, 'synthetic', :f, :n, :t, :c, 'bundled synthetic data (data/)')"),
+                 {"d": dataset, "f": filename, "n": n, "t": now, "c": checksum})
+
+
+def _load_schemes(conn, master: list[dict], master_path: Path, now) -> dict:
+    conn.execute(text("DELETE FROM scheme_rules"))
+    conn.execute(text("DELETE FROM scheme_master"))
+    out = {"scheme_master": bulk_insert(conn, "scheme_master", (
+        "master_row", "scheme_name", "level", "state_ut", "verification_status", "raw_json", "source_file",
+        "loaded_at"), (
+        (i, _nz(r.get("Programme / Scheme Name")), _nz(r.get("Level")), _nz(r.get("State / UT / Central")),
+         _nz(r.get("Verification Status")), json.dumps(r, default=str, ensure_ascii=False), master_path.name, now)
+        for i, r in enumerate(master, start=1)))}
+    out["scheme_rules"] = bulk_insert(conn, "scheme_rules", RULE_COLS, rules_rows(master, now))
+    return out
+
+
+def seed_if_empty(engine: Engine | None = None) -> dict:
+    """Startup auto-seed. Loads the synthetic data only if BOTH student tables are empty (a fresh database).
+    Never touches CBSE / Jan Aadhaar rows that are already there (uploaded or synthetic): Render's free
+    services restart often and must not overwrite uploaded data. The scheme master (reference data, not
+    student data) is (re)loaded if it is missing or the xlsx in the repo changed."""
+    engine = engine or get_engine()
+    migrate(engine)
+    with engine.connect() as conn:
+        counts = {t: conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar() for t in INPUT_TABLES}
+        meta = {r[0]: r[1] for r in conn.execute(text("SELECT dataset, checksum FROM seed_meta"))}
+    if counts["cbse_results"] == 0 and counts["jan_aadhaar_members"] == 0:
+        return seed(engine, force=True)
+    out = {"status": "skipped", "reason": "CBSE / Jan Aadhaar tables already contain data; not overwritten",
+           "counts": counts}
+    master_path = Path(config.SCHEME_MASTER_PATH)
+    if master_path.exists():
+        sha = hashlib.sha256(master_path.read_bytes()).hexdigest()
+        if not counts["scheme_master"] or not counts["scheme_rules"] or meta.get("scheme_master") != sha:
+            now = datetime.now(timezone.utc)
+            with engine.begin() as conn:
+                out["schemes"] = _load_schemes(conn, load_master(master_path), master_path, now)
+                conn.execute(text("DELETE FROM seed_meta WHERE dataset = 'scheme_master'"))
+                conn.execute(text("INSERT INTO seed_meta (dataset, checksum, row_count, loaded_at) "
+                                  "VALUES ('scheme_master', :c, :n, :t)"),
+                             {"c": sha, "n": out["schemes"]["scheme_master"], "t": now})
+            out["reason"] += "; scheme master (re)loaded"
+    return out
 
 
 if __name__ == "__main__":

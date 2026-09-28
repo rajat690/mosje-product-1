@@ -36,7 +36,10 @@ def display_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def render_scenarios36(rows):
+GT_COUNTS = ["True matches (correct link)", "False matches (wrong link)", "Missed matches", "Correctly not linked"]
+
+
+def render_scenarios36(rows, ground_truth_available: bool = True):
     df = prepare(rows)
     st.subheader("Earlier 36-scenario decision matrix, applied to this run's scores")
     st.warning("Reporting view only. The live linkage rules are V3.0 (56-row matrix + G7 margin); they decided "
@@ -48,18 +51,24 @@ def render_scenarios36(rows):
                "with weights 30/25/20/20/5. 'Action differs' compares the 36-row action (with the ≥5-point "
                "top-candidate margin rule on rows 1–5) with the action V3.0 actually gave.")
     tot = df[COUNTS].sum()
+    gt = ground_truth_available
+    if not gt:
+        st.info("Match-outcome columns: not available (no ground truth) for uploaded data.")
     k = st.columns(7)
     k[0].metric("Records", f"{tot['Records']:,}")
-    k[1].metric("True matches", f"{tot['True matches (correct link)']:,}")
-    k[2].metric("False matches", f"{tot['False matches (wrong link)']:,}")
-    k[3].metric("Missed matches", f"{tot['Missed matches']:,}")
-    k[4].metric("Correctly not linked", f"{tot['Correctly not linked']:,}")
+    k[1].metric("True matches", f"{tot['True matches (correct link)']:,}" if gt else "n/a")
+    k[2].metric("False matches", f"{tot['False matches (wrong link)']:,}" if gt else "n/a")
+    k[3].metric("Missed matches", f"{tot['Missed matches']:,}" if gt else "n/a")
+    k[4].metric("Correctly not linked", f"{tot['Correctly not linked']:,}" if gt else "n/a")
     m = df[df["#"].str.isdigit()]
     k[5].metric("Unreachable rows", f"{(m.Status == 'Unreachable').sum()} of 36")
     k[6].metric("Action differs from V3.0", f"{df['Action differs from V3.0 (records)'].sum():,} records")
     only_hit = st.checkbox("Show only rows with records", value=False, key="s36_only_hit")
     view = df[df.Records > 0] if only_hit else df
-    st.dataframe(display_frame(view), hide_index=True, width="stretch", height=35 * (len(view) + 1) + 3,
+    shown = display_frame(view)
+    if not gt:
+        shown = shown.drop(columns=GT_COUNTS)
+    st.dataframe(shown, hide_index=True, width="stretch", height=35 * (len(view) + 1) + 3,
                  column_config={"Note": st.column_config.TextColumn(width="large"),
                                 "Classification": st.column_config.TextColumn(width="medium")})
     notes = df[df.Note != ""]

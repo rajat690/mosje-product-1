@@ -6,7 +6,8 @@ engine** against the 547-row Scholarship Master (Eligibility Rule V3.0).
 
 > **Synthetic data only.** Every person, ID and mobile number in `data/` is fictional. Real Jan Aadhaar
 > or CBSE data must never be loaded into this deployment. Production belongs on NIC / MeghRaj (see
-> `HOSTING_GUIDE.md`, step 11).
+> `HOSTING_GUIDE.md`, step 11). Your own **anonymised** files can be uploaded: see `UPLOAD_GUIDE.md`
+> and `templates/DATA_DICTIONARY.md`.
 
 ![architecture](docs/architecture.png)
 
@@ -22,20 +23,23 @@ engine** against the 547-row Scholarship Master (Eligibility Rule V3.0).
   `compute()` function in `pipeline.py` that does no file IO. The linkage and eligibility rules are unchanged.
 * **dashboard/**: Streamlit app. It reads everything from the API (`API_BASE_URL` + `API_KEY`) and has these tabs:
   Funnel, Linkage decisions, Match quality, Eligibility & schemes, Outreach queues, Student drill-down,
-  Scenarios, Compiled rules, Admin (seed and run buttons), **Match Outcomes** and **36-Scenario Matrix**
+  Scenarios, Compiled rules, Admin (seed and run buttons, **Upload datasets**), **Match Outcomes** and **36-Scenario Matrix**
   (reporting view of the earlier 36-row matrix; V3.0 still decides every link).
 
 ### Tables
 | Group | Tables |
 |---|---|
-| Inputs | `jan_aadhaar_members` (with normalised `dob_iso` and `gender_norm` blocking keys), `cbse_results`, `ground_truth` (synthetic evaluation only), `scheme_master` (raw xlsx rows as JSON), `scheme_rules` (compiled rules), `seed_meta` |
+| Inputs | `jan_aadhaar_members` (with normalised `dob_iso` and `gender_norm` blocking keys), `cbse_results`, `ground_truth` (synthetic evaluation only), `scheme_master` (raw xlsx rows as JSON), `scheme_rules` (compiled rules), `seed_meta`, `dataset_sources` (synthetic / uploaded, file name, rows, load time) |
 | Results | `pipeline_runs`, `link_decisions`, `student_eligibility`, `eligibility_results` (the full student × scheme audit), `outreach_queue` |
 
 ## API (all endpoints except `/health` and `/docs` need header `X-API-Key: $API_KEY`)
 | Method | Path | What it does |
 |---|---|---|
 | GET | `/health` | Liveness, DB type, seeded yes/no, latest run |
-| POST | `/admin/seed?force=` | Create tables and load the CSVs + master (idempotent) |
+| POST | `/admin/seed?force=` | Create tables and load the synthetic CSVs + master (idempotent; replaces uploaded data) |
+| POST | `/datasets/cbse/upload?run_pipeline=` | Upload a CBSE file (.csv / .csv.gz / .xlsx, multipart field `file`): validate, then replace `cbse_results` in one transaction. 422 lists missing/extra columns and up to 10 bad rows |
+| POST | `/datasets/jan-aadhaar/upload?run_pipeline=` | Same for `jan_aadhaar_members` |
+| GET | `/datasets/status` | Source (synthetic / uploaded / cleared), file, rows and load time of CBSE, Jan Aadhaar and ground truth |
 | GET | `/admin/status` | Row counts and recent runs |
 | GET | `/cbse/students?class=X\|XII&year=2025-26&district=&page=&page_size=` | Paginated CBSE records |
 | GET | `/cbse/students/{roll_no}` | One CBSE record |
@@ -93,6 +97,8 @@ dashboard, plus a shared, generated `API_KEY`.
 | `DATABASE_URL` | API | Postgres URL (`postgres://…` is accepted). If unset, a local SQLite file is used |
 | `API_KEY` | API, dashboard | Shared secret sent in `X-API-Key` |
 | `API_BASE_URL` | dashboard | Public URL of the API. On Render, `API_HOST` is used if this is unset |
-| `AUTO_SEED`, `AUTO_RUN_PIPELINE` | API | On start-up: seed if needed, and run once if there are no results |
+| `AUTO_SEED`, `AUTO_RUN_PIPELINE` | API | On start-up: load the synthetic data **only if the CBSE and Jan Aadhaar tables are empty** (uploaded data survives restarts), and run once if there are no results |
+| `MAX_UPLOAD_ROWS` | API | Largest accepted upload (default 1,000,000 rows) |
+| `PIPELINE_MEMORY_LIMIT_MB` | API | Refuse a run whose estimated memory is above this (default 450 on Render, off elsewhere; 0 = off) |
 | `KEEP_OLD_RESULTS` | API | `false` (default) replaces the previous run's rows to keep the DB small |
 | `PIPELINE_SENSITIVITY` | API | `true` also runs the non-spec sensitivity analysis |

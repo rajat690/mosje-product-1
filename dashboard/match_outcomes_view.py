@@ -34,19 +34,23 @@ def explanatory_table(df: pd.DataFrame) -> pd.DataFrame:
         ["Outcome", "Result", "How it is calculated", "What it means", "Better when"]]
 
 
-def render_match_outcomes(outcomes, counts: dict | None = None):
+def render_match_outcomes(outcomes, counts: dict | None = None, ground_truth_available: bool = True):
     df = outcomes_frame(outcomes)
     st.subheader("Match outcomes vs ground truth")
+    if not ground_truth_available:
+        st.info("Not available (no ground truth). The current data was uploaded; real data has no ground truth, "
+                "so these six outcomes cannot be measured. Restore the synthetic data to see them.")
+        counts = None
     st.caption("How well the record linkage did, measured against the synthetic ground truth (one CBSE record = "
                "one decision). These are the same numbers as the Match quality tab, overall row.")
     cols = st.columns(6)
     for col, (_, r) in zip(cols, df.iterrows()):
-        col.metric(r.Outcome, r.Display, SHORT[r.Key], delta_color="off", delta_arrow="off", border=True,
+        col.metric(r.Outcome, r.Display if ground_truth_available else "n/a", SHORT[r.Key], delta_color="off", delta_arrow="off", border=True,
                    help=f"{r.Formula}. {r.Definition}")
     st.markdown("**What each outcome means**")
     st.dataframe(explanatory_table(df), hide_index=True, width="stretch",
                  column_config={"What it means": st.column_config.TextColumn(width="large")})
-    if counts:
+    if counts and all(v is not None for v in counts.values()):
         st.caption(f"Underlying counts: {counts.get('records', 0):,} CBSE records · "
                    f"{counts.get('records_with_true_ja_member', 0):,} really in Jan Aadhaar · "
                    f"TP {counts.get('TP', 0):,} · FP {counts.get('FP', 0):,} · FN {counts.get('FN', 0):,} · "

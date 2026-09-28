@@ -1,0 +1,4 @@
+roll_no,apaar_id,candidate_name,dob,gender,father_name,mother_name,class_passed,school,district,mobile
+90000001,100000000001,TEST STUDENT ONE,07 Apr 2009,Female,TEST FATHER ONE,TEST MOTHER ONE,XII,"Example Public School, Jaipur",Jaipur,9000000001
+90000002,100000000002,Test Student Two,16-03-2011,M,Test Father Two,Test Mother Two,X,"Sample Senior Secondary School, Ajmer",Ajmer,
+90000003,,Test Student Three,2010-01-13,Male,Test Father Three,Test Mother Three,X,"Demo Academy, Kota",Kota,9000000003

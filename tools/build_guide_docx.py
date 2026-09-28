@@ -1,4 +1,5 @@
-"""Convert HOSTING_GUIDE.md -> HOSTING_GUIDE.docx (python-docx). Handles the subset of Markdown used
+"""Convert HOSTING_GUIDE.md -> HOSTING_GUIDE.docx (python-docx). Other guides:
+python tools/build_guide_docx.py UPLOAD_GUIDE.md   (writes UPLOAD_GUIDE.docx next to it). Handles the subset of Markdown used
 in the guide: headings, paragraphs, **bold**, *italic*, `code`, links, numbered/bulleted lists (nested),
 code blocks, tables, images, block quotes, check boxes and horizontal rules."""
 import re
@@ -13,8 +14,8 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "HOSTING_GUIDE.md"
-DST = ROOT / "HOSTING_GUIDE.docx"
+SRC = ROOT / (sys.argv[1] if len(sys.argv) > 1 else "HOSTING_GUIDE.md")
+DST = SRC.with_suffix(".docx")
 BLUE = RGBColor(0x1F, 0x4E, 0x79)
 
 doc = Document()
@@ -206,7 +207,7 @@ while i < len(lines):
     p = doc.add_paragraph()
     add_runs(p, text)
 
-doc.core_properties.title = "MoSJE Product 1 platform – Hosting guide (GitHub + Render)"
+doc.core_properties.title = next((ln.lstrip("# ").strip() for ln in lines if ln.startswith("# ")), SRC.stem)
 doc.core_properties.author = "MoSJE Product 1 team"
 doc.save(DST)
 print("saved", DST)

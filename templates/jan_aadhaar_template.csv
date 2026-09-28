@@ -1,0 +1,4 @@
+jan_aadhaar_id,member_id,nameEng,nameHnd,dob,gender,fatherNameEng,motherNameEng,category,annual_family_income,district,domicile_state,disability,mobile,relation
+JA90000001,M90000001,Test Student One,,07-04-2009,Female,Test Father One,Test Mother One,SC,120000,Jaipur,Rajasthan,No,9000000001,Child
+JA90000002,M90000002,Test Student Two,,16-03-2011,Male,Test Father Two,Test Mother Two,OBC,250000,Ajmer,Rajasthan,No,,Child
+JA90000003,M90000003,Test Father Three,,02-02-1980,Male,Test Grandfather Three,Test Grandmother Three,General,,Kota,Rajasthan,No,9000000003,Head

@@ -3,7 +3,6 @@
 Env vars: API_BASE_URL (e.g. https://mosje-api.onrender.com) and API_KEY.
 Run locally:  streamlit run dashboard/app.py
 """
-import time
 
 import altair as alt
 import pandas as pd
@@ -13,6 +12,7 @@ from api_client import ApiError, MosjeApi, candidate_base_urls
 from match_outcomes_view import render_match_outcomes
 from scenarios36_view import render_scenarios36
 from scenarios_view import render_scenarios
+from upload_view import render_upload_section, run_pipeline_and_wait
 
 st.set_page_config(page_title="MoSJE Scholarship Intelligence", layout="wide")
 COLORS = alt.Scale(domain=["Auto-link", "Auto-link+flag", "Do not link + Discovery outreach", "Do not link"],
@@ -52,30 +52,22 @@ except Exception as e:  # noqa: BLE001
 
 
 def admin_panel(expanded=True):
-    with st.expander("Admin: database & pipeline", expanded=expanded):
+    with st.expander("Admin: data, uploads & pipeline", expanded=expanded):
         st.write(f"API: `{api().base_url}` · database: **{health.get('database')}** · "
                  f"seeded: **{health.get('seeded')}** · startup: {health.get('startup')}")
         if health.get("startup_error"):
             st.error(health["startup_error"])
         c1, c2, c3 = st.columns(3)
-        if c1.button("1 · Load (seed) the database"):
+        if c1.button("1 · Load / restore the synthetic data"):
             try:
                 with st.spinner("Seeding …"):
                     st.success(api().post("/admin/seed"))
             except ApiError as e:
                 st.error(str(e))
+        c1.caption("Restores the bundled synthetic data (replaces uploaded data).")
         if c2.button("2 · Run the pipeline"):
             try:
-                r = api().post("/pipeline/run")
-                st.info(f"Started run {r['run_id']} – this takes about 10 s locally, 1–3 min on the free plan.")
-                for _ in range(120):
-                    time.sleep(3)
-                    s = api().get(f"/pipeline/runs/{r['run_id']}")
-                    if s["status"] in ("SUCCEEDED", "FAILED"):
-                        break
-                (st.success if s["status"] == "SUCCEEDED" else st.error)(f"Run {s['run_id']}: {s['status']} "
-                                                                         f"{s.get('error') or ''}")
-                st.cache_data.clear()
+                run_pipeline_and_wait(api())
             except ApiError as e:
                 st.error(str(e))
         if c3.button("Refresh results"):
@@ -88,13 +80,16 @@ def admin_panel(expanded=True):
                 st.dataframe(pd.DataFrame(stt["runs"]).rename(columns={"started_at": "started_at (UTC)", "finished_at": "finished_at (UTC)"}), hide_index=True, width="stretch")
         except ApiError as e:
             st.error(f"{e} – check that API_KEY on the dashboard equals API_KEY on the API.")
+        st.divider()
+        render_upload_section(api())
 
 
 latest = health.get("latest_run") or {}
 try:
-    fun, dec, summ, queue, cov, top, rules, scn, mo, s36 = load(str(latest.get("run_id")))
+    fun, dec, summ, queue, cov, top, rules, scn, mo, s36 = load(f"{latest.get('run_id')}:{latest.get('status')}")
 except ApiError as e:
-    st.warning(f"No results yet ({e}). Use the buttons below: first **Load the database**, then **Run the pipeline**.")
+    st.warning(f"No results for the current data yet ({e}). Use the Admin panel below: load the synthetic data "
+               "or upload your own files, then **Run the pipeline** (or **Run matching**).")
     admin_panel(True)
     st.stop()
 
@@ -103,15 +98,23 @@ fval = dict(zip(funnel.Stage, funnel.Count))
 quality = pd.DataFrame(fun["quality"])
 ov = quality.iloc[0]
 es = fun["eligibility_stats"]
-st.caption(f"SYNTHETIC data · Linkage Rules {fun['rule_version']} + Eligibility Rule {fun['rule_version']} · "
+gt_ok = (fun.get("ground_truth") or {"available": True})["available"]
+try:
+    _ds = api().get("/datasets/status")["datasets"]
+    data_label = "UPLOADED data" if any(v["source"] == "uploaded" for v in _ds.values()) else "SYNTHETIC data"
+except ApiError:
+    data_label = "data source unknown"
+st.caption(f"{data_label} · Linkage Rules {fun['rule_version']} + Eligibility Rule {fun['rule_version']} · "
            f"Eligibility_As_Of_Date {fun['eligibility_as_of_date']} · run {fun['run_id']} · via API {api().base_url}")
 
 k = st.columns(7)
 k[0].metric("CBSE records", f"{int(fval['CBSE records received']):,}")
 k[1].metric("Linked", f"{int(fval['Eligibility-checked (linked students)']):,}",
             f"{float(fval['Match rate (linked / received)']):.1%} match rate")
-k[2].metric("Precision", f"{ov.Precision:.3f}" if pd.notna(ov.Precision) else "n/a")
-k[3].metric("Recall", f"{ov.Recall:.3f}" if pd.notna(ov.Recall) else "n/a")
+k[2].metric("Precision", f"{ov.Precision:.3f}" if gt_ok and pd.notna(ov.Precision) else "n/a",
+            None if gt_ok else "no ground truth", delta_color="off", delta_arrow="off")
+k[3].metric("Recall", f"{ov.Recall:.3f}" if gt_ok and pd.notna(ov.Recall) else "n/a",
+            None if gt_ok else "no ground truth", delta_color="off", delta_arrow="off")
 k[4].metric("QUEUE_FOR_OUTREACH", f"{int(fval['QUEUE_FOR_OUTREACH']):,}")
 k[5].metric("DISCOVERY queue", f"{int(fval['QUEUE_FOR_DISCOVERY_OUTREACH']):,}")
 k[6].metric("Eligible schemes / student", f"{es['eligible_mean']}",
@@ -155,13 +158,17 @@ with tabs[1]:
 
 with tabs[2]:
     st.subheader("Match quality vs ground truth (spec section 8)")
+    if not gt_ok:
+        st.info("Not available (no ground truth): the current data was uploaded, and real data has no ground "
+                "truth, so TP / FP / FN, precision and recall cannot be measured. Records per class are shown.")
     st.caption("TP = linked to true member · FP = linked to wrong member or student not in Jan Aadhaar · "
                "FN = true member exists but not linked · FPR = FP/(FP+TN)")
     st.dataframe(quality, hide_index=True, width="stretch")
     nq = quality[quality.Segment.str.startswith("Noise:") & quality.Recall.notna()]
-    st.altair_chart(alt.Chart(nq).mark_bar(color="#548235").encode(
-        x=alt.X("Recall:Q", scale=alt.Scale(domain=[0, 1])), y=alt.Y("Segment:N", sort="-x", title=None),
-        tooltip=["Segment", "Records", "True_Matches_TP", "Missed_Matches_FN", "Recall"]), width="stretch")
+    if len(nq):
+        st.altair_chart(alt.Chart(nq).mark_bar(color="#548235").encode(
+            x=alt.X("Recall:Q", scale=alt.Scale(domain=[0, 1])), y=alt.Y("Segment:N", sort="-x", title=None),
+            tooltip=["Segment", "Records", "True_Matches_TP", "Missed_Matches_FN", "Recall"]), width="stretch")
 
 with tabs[3]:
     c1, c2 = st.columns([2, 1])
@@ -244,7 +251,7 @@ with tabs[5]:
             st.error("Not linked - no outreach.")
 
 with tabs[6]:
-    render_scenarios(scn)
+    render_scenarios(scn, gt_ok)
 
 with tabs[7]:
     st.subheader("Compiled scheme rules")
@@ -254,7 +261,7 @@ with tabs[8]:
     admin_panel(True)
 
 with tabs[9]:
-    render_match_outcomes(mo["outcomes"], mo.get("counts"))
+    render_match_outcomes(mo["outcomes"], mo.get("counts"), mo.get("ground_truth_available", True))
 
 with tabs[10]:
-    render_scenarios36(s36)
+    render_scenarios36(s36, gt_ok)
