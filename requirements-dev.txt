@@ -1,0 +1,4 @@
+-r requirements.txt
+-r requirements-dashboard.txt
+pytest==9.1.1
+playwright   # optional: tools/screenshot.py

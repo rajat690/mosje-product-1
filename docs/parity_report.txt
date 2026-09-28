@@ -1,0 +1,9 @@
+# Parity: platform (Postgres 17, via API) vs prototype output/ CSVs
+PASS  linkage decisions: 5000 prototype rows vs 5000 platform rows
+PASS  student eligibility summary: 3712 prototype rows vs 3712 platform rows
+PASS  outreach queue: 3853 prototype rows vs 3853 platform rows
+PASS  scenario outcomes: 59 prototype rows vs 59 platform rows
+PASS  compiled scheme rules: 547 prototype rows vs 547 platform rows
+PASS  funnel: 17 stages
+OVERALL: PASS – platform results identical to the prototype
+Full eligibility audit: 248,704 student x scheme pairs, Final_Result + Failure_Reason identical (checked via SQL)

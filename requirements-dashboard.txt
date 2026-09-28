@@ -1,0 +1,5 @@
+# Dashboard service (Streamlit) - talks to the API only
+streamlit==1.64.0
+pandas==3.0.6
+altair==6.3.0
+httpx==0.28.1

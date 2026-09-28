@@ -1,0 +1,65 @@
+# Render Blueprint for the MoSJE Product 1 platform (SYNTHETIC DATA ONLY).
+# Creates: 1 free Postgres database + 2 free web services (API and dashboard) in Singapore.
+# Deploy: Render Dashboard -> New -> Blueprint -> pick this GitHub repo -> Apply.
+# Schema: https://render.com/schema/render.yaml.json
+#
+# Notes
+# * Free Postgres expires 30 days after creation (14-day grace period to upgrade, then deleted).
+# * Free web services spin down after 15 min without traffic; the first request takes ~1 min.
+# * Free web services cannot receive private-network traffic, so the dashboard calls the API's
+#   public https URL (derived from API_HOST, or set API_BASE_URL by hand on the dashboard).
+
+databases:
+  - name: mosje-db
+    plan: free
+    region: singapore
+    databaseName: mosje
+    user: mosje
+
+envVarGroups:
+  - name: mosje-shared
+    envVars:
+      - key: API_KEY            # one random secret, shared by the API and the dashboard
+        generateValue: true
+      - key: PYTHON_VERSION     # the version the code was tested with
+        value: "3.13.5"
+
+services:
+  - type: web
+    name: mosje-api
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mosje-db
+          property: connectionString
+      - fromGroup: mosje-shared
+      - key: AUTO_SEED            # load the synthetic data automatically on first start
+        value: "true"
+      - key: AUTO_RUN_PIPELINE    # run linkage + eligibility once after the first seed
+        value: "true"
+      - key: LOG_LEVEL
+        value: INFO
+
+  - type: web
+    name: mosje-dashboard
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements-dashboard.txt
+    startCommand: streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    healthCheckPath: /_stcore/health
+    autoDeployTrigger: commit
+    envVars:
+      - fromGroup: mosje-shared
+      - key: API_HOST             # the API service's host name; the dashboard turns it into https://<host>.onrender.com
+        fromService:
+          type: web
+          name: mosje-api
+          property: host
